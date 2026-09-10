@@ -167,7 +167,32 @@ class DataStore {
     void addSubject(String n,String c){subjects.put(o("id",id(),"name",n,"code",c));save();}
     void addNotice(String sid,String text){notices.put(o("id",id(),"subjectId",sid,"text",text,"date",today()));save();}
     void addFile(String sid,String name,String path){files.put(o("id",id(),"subjectId",sid,"name",name,"path",path,"date",today()));save();}
-    void addDeadline(String t,String s,String det,String d){deadlines.put(o("id",id(),"title",t,"subject",s,"details",det,"date",d,"done",false));save();}
+    void addDeadline(String t, String s, String det, String d) {
+    deadlines.put(
+        o("id", id(),
+          "title", t,
+          "subject", s,
+          "details", det,
+          "date", d,
+          "done", false)
+    );
+    save();
+}
+
+JSONObject o(Object... kv) {
+    JSONObject x = new JSONObject();
+
+    for (int i = 0; i + 1 < kv.length; i += 2) {
+        try {
+            x.put(String.valueOf(kv[i]), kv[i + 1]);
+        } catch (Exception e) {
+            // Ignore malformed entry
+        }
+    }
+
+    return x;
+}
+
     void addCountdown(String t,String d,String n){countdowns.put(o("id",id(),"title",t,"date",d,"note",n));save();}
     void addIdea(String type,String text){ideas.put(o("id",id(),"type",type,"text",text,"date",today()));save();}
     JSONObject o(String... kv){JSONObject x=new JSONObject();for(int i=0;i+1<kv.length;i+=2)try{x.put(kv[i],kv[i+1]);}catch(Exception e){}return x;}
