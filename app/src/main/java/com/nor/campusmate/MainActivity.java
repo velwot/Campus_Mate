@@ -27,6 +27,7 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -119,8 +120,24 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         store = new DataStore(this);
+        if (b != null) {
+            pendingClassNoteSubject = b.getString("pendingSubject", "");
+            pendingClassNoteChapter = b.getString("pendingChapter", "");
+            pendingCameraUri = b.getParcelable("pendingCameraUri");
+            currentTab = b.getInt("currentTab", 0);
+            currentSubjectView = b.getString("currentSubjectView", "notice");
+        }
         buildShell();
         showHome();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putString("pendingSubject", pendingClassNoteSubject);
+        out.putString("pendingChapter", pendingClassNoteChapter);
+        out.putParcelable("pendingCameraUri", pendingCameraUri);
+        out.putInt("currentTab", currentTab);
+        out.putString("currentSubjectView", currentSubjectView);
     }
 
     void buildShell() {
@@ -679,18 +696,28 @@ public class MainActivity extends Activity {
     File copyUriToPrivateStorage(Uri source, String name) {
         File dir = store.filesDir();
         File out = new File(dir, uniqueFilename(name));
+        InputStream in = null;
+        OutputStream os = null;
         try {
-            InputStream in = getContentResolver().openInputStream(source);
-            OutputStream os = new FileOutputStream(out);
+            in = getContentResolver().openInputStream(source);
+            if (in == null) return null;
+            os = new FileOutputStream(out);
             byte[] buffer = new byte[8192];
             int read;
             while ((read = in.read(buffer)) != -1) os.write(buffer, 0, read);
-            in.close();
-            os.close();
-            return out;
+            os.flush();
         } catch (Exception e) {
+            if (out.exists()) out.delete();
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) {}
+            try { if (os != null) os.close(); } catch (Exception ignored) {}
+        }
+        if (out.length() == 0) {
+            out.delete();
             return null;
         }
+        return out;
     }
 
     String uniqueFilename(String name) {
@@ -808,7 +835,7 @@ public class MainActivity extends Activity {
         v.addView(tv(o.optString("subject", "General") + " • " + fmtDate(o.optString("date")), 12, MUTED));
         if (!o.optString("details").isEmpty()) v.addView(tv(o.optString("details"), 14, INK));
         if (actions) {
-            Button done = btn(o.optBoolean("done") ? "Mark active" : "Mark done");
+            Button done = btn(store.isDone(o) ? "Mark active" : "Mark done");
             v.addView(done);
             done.setOnClickListener(x -> { store.toggleDeadline(o.optString("id")); showAlerts(); });
         }
@@ -1108,16 +1135,21 @@ class DataStore {
     void addNotice(String sid, String text) { notices.put(o("id", id(), "subjectId", sid, "text", text, "date", today())); save(); }
     void addFile(String sid, String name, String path) { files.put(o("id", id(), "subjectId", sid, "name", name, "path", path, "date", today())); save(); }
     void addDeadline(String title, String subject, String details, String date) {
-    deadlines.put(o(
-        "id", id(),
-        "title", title,
-        "subject", subject,
-        "details", details,
-        "date", date,
-        "done", "false"
-    ));
-    save();
-}
+        try {
+            JSONObject d = new JSONObject();
+            d.put("id", id());
+            d.put("title", title);
+            d.put("subject", subject);
+            d.put("details", details);
+            d.put("date", date);
+            d.put("done", false);
+            deadlines.put(d);
+        } catch (JSONException e) {
+            // Fallback: use string-based helper (should not happen)
+            deadlines.put(o("id", id(), "title", title, "subject", subject, "details", details, "date", date));
+        }
+        save();
+    }
     void addCountdown(String title, String date, String note) { countdowns.put(o("id", id(), "title", title, "date", date, "note", note)); save(); }
     void addIdea(String type, String text) { ideas.put(o("id", id(), "type", type, "text", text, "date", today())); save(); }
 
@@ -1141,7 +1173,14 @@ class DataStore {
         for (int i = 0; i < chapters.length(); i++) { JSONObject c = chapters.optJSONObject(i); if (!id.equals(c.optString("id"))) next.put(c); }
         chapters = next;
         JSONArray nextNotes = new JSONArray();
-        for (int i = 0; i < classNotes.length(); i++) { JSONObject n = classNotes.optJSONObject(i); if (!id.equals(n.optString("chapterId"))) nextNotes.put(n); }
+        for (int i = 0; i < classNotes.length(); i++) {
+            JSONObject n = classNotes.optJSONObject(i);
+            if (id.equals(n.optString("chapterId"))) {
+                deleteAttachmentIfUnreferenced(n.optString("path"), n.optString("id"));
+            } else {
+                nextNotes.put(n);
+            }
+        }
         classNotes = nextNotes;
         save();
     }
@@ -1184,51 +1223,103 @@ class DataStore {
         e.printStackTrace();
     }
 }
-    void deleteClassNote(String id) { JSONArray next = new JSONArray(); for (int i = 0; i < classNotes.length(); i++) { JSONObject n = classNotes.optJSONObject(i); if (!id.equals(n.optString("id"))) next.put(n); } classNotes = next; save(); }
+    void deleteClassNote(String id) {
+        String pathToDelete = null;
+        JSONArray next = new JSONArray();
+        for (int i = 0; i < classNotes.length(); i++) {
+            JSONObject n = classNotes.optJSONObject(i);
+            if (id.equals(n.optString("id"))) {
+                pathToDelete = n.optString("path");
+            } else {
+                next.put(n);
+            }
+        }
+        classNotes = next;
+        if (pathToDelete != null && !pathToDelete.isEmpty()) {
+            deleteAttachmentIfUnreferenced(pathToDelete, id);
+        }
+        save();
+    }
 
-    int countDue(int n) { int c = 0; for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); long d = daysUntil(o.optString("date")); if (!o.optBoolean("done") && d <= n && d >= 0) c++; } return c; }
-    JSONArray upcoming(int days) { JSONArray out = new JSONArray(); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); long d = daysUntil(o.optString("date")); if (!o.optBoolean("done") && d >= 0 && d <= days) out.put(o); } sortDate(out); return out; }
-    JSONArray upcomingAll() { JSONArray out = new JSONArray(); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); if (!o.optBoolean("done")) out.put(o); } sortDate(out); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); if (o.optBoolean("done")) out.put(o); } return out; }
+    /** Delete the physical attachment file only if no other record references it */
+    void deleteAttachmentIfUnreferenced(String path, String excludeId) {
+        if (path == null || path.isEmpty()) return;
+        // Check if any other classNote or file record references this path
+        for (int i = 0; i < classNotes.length(); i++) {
+            JSONObject n = classNotes.optJSONObject(i);
+            if (!excludeId.equals(n.optString("id")) && path.equals(n.optString("path"))) return;
+        }
+        for (int i = 0; i < files.length(); i++) {
+            JSONObject f = files.optJSONObject(i);
+            if (path.equals(f.optString("path"))) return;
+        }
+        File file = new File(path);
+        if (file.exists()) file.delete();
+    }
+
+    int countDue(int n) { int c = 0; for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); long d = daysUntil(o.optString("date")); if (!isDone(o) && d <= n && d >= 0) c++; } return c; }
+    JSONArray upcoming(int days) { JSONArray out = new JSONArray(); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); long d = daysUntil(o.optString("date")); if (!isDone(o) && d >= 0 && d <= days) out.put(o); } sortDate(out); return out; }
+    JSONArray upcomingAll() { JSONArray out = new JSONArray(); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); if (!isDone(o)) out.put(o); } sortDate(out); for (int i = 0; i < deadlines.length(); i++) { JSONObject o = deadlines.optJSONObject(i); if (isDone(o)) out.put(o); } return out; }
     JSONArray sortedCountdowns() { JSONArray out = new JSONArray(); for (int i = 0; i < countdowns.length(); i++) out.put(countdowns.optJSONObject(i)); sortDate(out); return out; }
     JSONArray sortedIdeas() { JSONArray out = new JSONArray(); for (int i = ideas.length() - 1; i >= 0; i--) out.put(ideas.optJSONObject(i)); return out; }
     JSONArray noticesFor(String sid) { JSONArray out = new JSONArray(); for (int i = 0; i < notices.length(); i++) if (sid.equals(notices.optJSONObject(i).optString("subjectId"))) out.put(notices.optJSONObject(i)); return out; }
     JSONArray filesFor(String sid) { JSONArray out = new JSONArray(); for (int i = 0; i < files.length(); i++) if (sid.equals(files.optJSONObject(i).optString("subjectId"))) out.put(files.optJSONObject(i)); return out; }
     JSONObject subjectById(String sid) { for (int i = 0; i < subjects.length(); i++) if (sid.equals(subjects.optJSONObject(i).optString("id"))) return subjects.optJSONObject(i); return new JSONObject(); }
     void sortDate(JSONArray x) { ArrayList<JSONObject> l = new ArrayList<>(); for (int i = 0; i < x.length(); i++) l.add(x.optJSONObject(i)); Collections.sort(l, (u, v) -> u.optString("date", "9999-12-31").compareTo(v.optString("date", "9999-12-31"))); JSONArray z = new JSONArray(); for (JSONObject item : l) z.put(item); for (int i = 0; i < z.length(); i++) { try { x.put(i, z.get(i)); } catch (Exception ignored) { } } }
-    void toggleDeadline(String id) { for (int i = 0; i < deadlines.length(); i++) if (id.equals(deadlines.optJSONObject(i).optString("id"))) { try { JSONObject o = deadlines.getJSONObject(i); o.put("done", !o.optBoolean("done")); } catch (Exception ignored) { } break; } save(); }
+    void toggleDeadline(String id) {
+        for (int i = 0; i < deadlines.length(); i++) {
+            if (id.equals(deadlines.optJSONObject(i).optString("id"))) {
+                try {
+                    JSONObject o = deadlines.getJSONObject(i);
+                    boolean current = isDone(o);
+                    o.put("done", !current);
+                } catch (Exception ignored) { }
+                break;
+            }
+        }
+        save();
+    }
+    /** Read "done" safely: handles both boolean true/false and string "true"/"false" */
+    boolean isDone(JSONObject o) {
+        Object v = o.opt("done");
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof String) return "true".equalsIgnoreCase((String) v);
+        return false;
+    }
     void delete(String k, String id) { JSONArray x = arr(k); JSONArray z = new JSONArray(); for (int i = 0; i < x.length(); i++) if (!id.equals(x.optJSONObject(i).optString("id"))) z.put(x.optJSONObject(i)); try { p.edit().putString(k, z.toString()).apply(); load(); } catch (Exception ignored) { } }
 
     void exportTo(Uri dest) {
         try {
             File tmp = new File(root, "export.zip");
             ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tmp));
+
+            // Build a map from absolute path → safe zip filename for portability
+            Map<String, String> pathToZipName = new HashMap<>();
+            Set<String> usedZipNames = new HashSet<>();
+            collectAttachmentPaths(files, pathToZipName, usedZipNames);
+            collectAttachmentPaths(classNotes, pathToZipName, usedZipNames);
+
+            // Deep-copy JSON arrays and replace absolute paths with portable filenames
             JSONObject data = new JSONObject();
             data.put("version", 2);
             data.put("subjects", subjects);
             data.put("notices", notices);
-            data.put("files", files);
+            data.put("files", replacePathsForExport(files, pathToZipName));
             data.put("deadlines", deadlines);
             data.put("countdowns", countdowns);
             data.put("ideas", ideas);
             data.put("chapters", chapters);
-            data.put("classNotes", classNotes);
+            data.put("classNotes", replacePathsForExport(classNotes, pathToZipName));
             byte[] bytes = data.toString(2).getBytes("UTF-8");
             zos.putNextEntry(new ZipEntry("data.json"));
             zos.write(bytes);
             zos.closeEntry();
-            Set<String> seen = new HashSet<>();
-            for (int i = 0; i < files.length(); i++) {
-                File src = new File(files.optJSONObject(i).optString("path"));
-                if (src.exists() && !seen.contains(src.getAbsolutePath())) {
-                    seen.add(src.getAbsolutePath());
-                    addZipEntry(zos, "attachments/", src);
-                }
-            }
-            for (int i = 0; i < classNotes.length(); i++) {
-                File src = new File(classNotes.optJSONObject(i).optString("path"));
-                if (src.exists() && !seen.contains(src.getAbsolutePath())) {
-                    seen.add(src.getAbsolutePath());
-                    addZipEntry(zos, "attachments/", src);
+
+            // Write attachment files into zip
+            for (Map.Entry<String, String> entry : pathToZipName.entrySet()) {
+                File src = new File(entry.getKey());
+                if (src.exists()) {
+                    addZipEntry(zos, "attachments/" + entry.getValue(), src);
                 }
             }
             zos.close();
@@ -1240,15 +1331,50 @@ class DataStore {
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             in.close();
             out.close();
+            tmp.delete();
             a.toast("Backup exported");
         } catch (Exception e) {
             a.toast("Export failed");
         }
     }
 
-    void addZipEntry(ZipOutputStream zos, String prefix, File src) throws Exception {
-        String safe = (prefix + src.getName()).replaceAll("[^a-zA-Z0-9._-]", "_");
-        zos.putNextEntry(new ZipEntry(safe));
+    /** Collect attachment paths and generate unique safe zip filenames */
+    void collectAttachmentPaths(JSONArray arr, Map<String, String> pathToZipName, Set<String> usedZipNames) {
+        for (int i = 0; i < arr.length(); i++) {
+            String path = arr.optJSONObject(i).optString("path");
+            if (path == null || path.isEmpty() || pathToZipName.containsKey(path)) continue;
+            File f = new File(path);
+            String safeName = f.getName().replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (safeName.isEmpty()) safeName = "file_" + i;
+            String candidate = safeName;
+            int counter = 1;
+            while (usedZipNames.contains(candidate)) {
+                int dot = safeName.lastIndexOf('.');
+                String base = (dot > 0) ? safeName.substring(0, dot) : safeName;
+                String ext = (dot > 0) ? safeName.substring(dot) : "";
+                candidate = base + "_" + counter + ext;
+                counter++;
+            }
+            usedZipNames.add(candidate);
+            pathToZipName.put(path, candidate);
+        }
+    }
+
+    /** Deep-copy a JSON array, replacing "path" with portable zip filename */
+    JSONArray replacePathsForExport(JSONArray src, Map<String, String> pathToZipName) throws JSONException {
+        JSONArray out = new JSONArray(src.toString());
+        for (int i = 0; i < out.length(); i++) {
+            JSONObject o = out.getJSONObject(i);
+            String path = o.optString("path");
+            if (pathToZipName.containsKey(path)) {
+                o.put("path", pathToZipName.get(path));
+            }
+        }
+        return out;
+    }
+
+    void addZipEntry(ZipOutputStream zos, String entryName, File src) throws Exception {
+        zos.putNextEntry(new ZipEntry(entryName));
         FileInputStream in = new FileInputStream(src);
         byte[] buf = new byte[8192];
         int n;
@@ -1261,6 +1387,7 @@ class DataStore {
         try {
             File tmp = new File(root, "import.zip");
             InputStream in = a.getContentResolver().openInputStream(src);
+            if (in == null) { a.toast("Import failed"); return; }
             FileOutputStream out = new FileOutputStream(tmp);
             byte[] buf = new byte[8192];
             int n;
@@ -1272,20 +1399,31 @@ class DataStore {
             ZipEntry e;
             JSONObject data = null;
             File att = filesDir();
+            String attCanonical = att.getCanonicalPath();
             while ((e = zin.getNextEntry()) != null) {
                 if (e.getName().equals("data.json")) {
                     ByteArrayOutputStream bo = new ByteArrayOutputStream();
                     while ((n = zin.read(buf)) > 0) bo.write(buf, 0, n);
                     data = new JSONObject(new String(bo.toByteArray(), "UTF-8"));
                 } else if (e.getName().startsWith("attachments/") && !e.isDirectory()) {
-                    File f = new File(att, new File(e.getName()).getName());
+                    // Extract only the filename, reject path traversal
+                    String entryFileName = new File(e.getName()).getName();
+                    if (entryFileName.contains("..") || entryFileName.contains("/") || entryFileName.contains("\\")) {
+                        continue; // Skip unsafe entry
+                    }
+                    File f = new File(att, entryFileName);
+                    // Verify the resolved path is inside the attachment directory
+                    if (!f.getCanonicalPath().startsWith(attCanonical)) {
+                        continue; // Path traversal attempt
+                    }
                     FileOutputStream fo = new FileOutputStream(f);
                     while ((n = zin.read(buf)) > 0) fo.write(buf, 0, n);
                     fo.close();
                 }
             }
             zin.close();
-            if (data == null) throw new Exception();
+            tmp.delete();
+            if (data == null) { a.toast("Import failed: no data found"); return; }
 
             subjects = data.optJSONArray("subjects");
             notices = data.optJSONArray("notices");
@@ -1305,28 +1443,47 @@ class DataStore {
             if (chapters == null) chapters = new JSONArray();
             if (classNotes == null) classNotes = new JSONArray();
 
-            for (int i = 0; i < files.length(); i++) {
-                JSONObject f = files.optJSONObject(i);
-                String old = f.optString("path");
-                if (old != null && !old.trim().isEmpty()) {
-                    File target = new File(att, new File(old).getName());
-                    if (target.exists()) f.put("path", target.getAbsolutePath());
-                }
-            }
-            for (int i = 0; i < classNotes.length(); i++) {
-                JSONObject f = classNotes.optJSONObject(i);
-                String old = f.optString("path");
-                if (old != null && !old.trim().isEmpty()) {
-                    File target = new File(att, new File(old).getName());
-                    if (target.exists()) f.put("path", target.getAbsolutePath());
-                }
-            }
+            // Resolve portable paths to local absolute paths
+            resolveImportedPaths(files, att);
+            resolveImportedPaths(classNotes, att);
+
+            // Normalize deadline "done" fields from string to boolean
+            normalizeDeadlineBooleans();
+
             save();
             a.toast("Backup imported");
             a.currentTab = 0;
             a.showHome();
         } catch (Exception e) {
             a.toast("Import failed");
+        }
+    }
+
+    /** Resolve imported paths: handles both old absolute paths and new portable filenames */
+    void resolveImportedPaths(JSONArray arr, File attachDir) {
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject f = arr.optJSONObject(i);
+            if (f == null) continue;
+            String path = f.optString("path");
+            if (path == null || path.trim().isEmpty()) continue;
+            // If it's already an absolute path that exists, keep it (same-device restore)
+            File existing = new File(path);
+            if (existing.isAbsolute() && existing.exists()) continue;
+            // Otherwise resolve from the attachment directory (portable filename or old path basename)
+            String baseName = new File(path).getName();
+            File target = new File(attachDir, baseName);
+            if (target.exists()) {
+                try { f.put("path", target.getAbsolutePath()); } catch (JSONException ignored) {}
+            }
+        }
+    }
+
+    /** Normalize deadline "done" from string "true"/"false" to actual boolean */
+    void normalizeDeadlineBooleans() {
+        for (int i = 0; i < deadlines.length(); i++) {
+            JSONObject d = deadlines.optJSONObject(i);
+            if (d == null) continue;
+            try { d.put("done", isDone(d)); } catch (JSONException ignored) {}
         }
     }
 }

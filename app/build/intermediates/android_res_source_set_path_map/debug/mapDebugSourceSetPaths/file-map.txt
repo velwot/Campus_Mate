@@ -1,0 +1,8 @@
+com.nor.campusmate.app-pngs-0 /home/velwot/Downloads/CampusMate/app/build/generated/res/pngs/debug
+com.nor.campusmate.app-updated_navigation_xml-1 /home/velwot/Downloads/CampusMate/app/build/generated/updated_navigation_xml/debug
+com.nor.campusmate.app-packageDebugResources-2 /home/velwot/Downloads/CampusMate/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
+com.nor.campusmate.app-packageDebugResources-3 /home/velwot/Downloads/CampusMate/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
+com.nor.campusmate.app-debug-4 /home/velwot/Downloads/CampusMate/app/build/intermediates/merged_res/debug/mergeDebugResources
+com.nor.campusmate.app-debug-5 /home/velwot/Downloads/CampusMate/app/src/debug/res
+com.nor.campusmate.app-main-6 /home/velwot/Downloads/CampusMate/app/src/main/res
+gradleHome-0 /home/velwot/.gradle
