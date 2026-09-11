@@ -1,0 +1,14 @@
+R_DEF: Internal format may change without notice
+local
+color bg
+color danger
+color ink
+color line
+color muted
+color primary
+color primary_dark
+color success
+color surface
+color warning
+style Theme.CampusMate
+xml file_paths

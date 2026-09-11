@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#F6F7FB</color>
+    <color name="danger">#D92D20</color>
+    <color name="ink">#172033</color>
+    <color name="line">#E4E7EC</color>
+    <color name="muted">#667085</color>
+    <color name="primary">#4F46E5</color>
+    <color name="primary_dark">#3730A3</color>
+    <color name="success">#027A48</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="warning">#B54708</color>
+    <style name="Theme.CampusMate" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F6F7FB</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:colorAccent">#4F46E5</item>
+    </style>
+</resources>
